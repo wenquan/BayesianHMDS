@@ -1,0 +1,21 @@
+# Python virtual environment
+hmds_env/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Ignore everything in the figure folder
+figure/
+
+# Ignore all pkl files
+*.pkl
+
+# Ignore all PDF files
+*.pdf
+
+# macOS system files
+.DS_Store

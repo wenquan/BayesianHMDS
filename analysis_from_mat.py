@@ -46,7 +46,6 @@ def plot_shepard_diagram(original_dmat, embedded_dmat, lambda_val=None, title="S
     if plt is None:
         print("\nWarning: matplotlib is not installed. Skipping plot. Please run 'pip install matplotlib'.")
         return
-        return
 
     print("Generating Shepard diagram...")
 
@@ -80,7 +79,6 @@ def plot_shepard_diagram(original_dmat, embedded_dmat, lambda_val=None, title="S
     ax.legend()
     plt.show()
 
-def plot_poincare_2d(poincare_coords, title="2D Hyperbolic Embedding (Poincare Disk)", colors=None):
 def plot_poincare_2d(poincare_coords, title="2D Hyperbolic Embedding (Poincare Disk)", colors=None, output_file=None):
     """
     Creates a 2D visualization of points in the Poincare disk.
@@ -122,14 +120,13 @@ def plot_poincare_2d(poincare_coords, title="2D Hyperbolic Embedding (Poincare D
     else:
         plt.show()
 
-def plot_poincare_3d(poincare_coords, colors=None):
 def plot_poincare_3d(poincare_coords, colors=None, output_file=None):
-    """
-    Creates an interactive 3D visualization of points in the Poincare ball.
+    """Creates an interactive 3D visualization of points in the Poincare ball.
 
     Args:
         poincare_coords (np.ndarray): An N x 3 array of Poincare coordinates.
         colors (optional): An array of colors for the points.
+        output_file (str, optional): If provided, saves the plot to this file path.
     """
     if plt is None:
         print("\nWarning: matplotlib is not installed. Skipping 3D plot. Please run 'pip install matplotlib'.")
@@ -174,14 +171,13 @@ def plot_poincare_3d(poincare_coords, colors=None, output_file=None):
     else:
         plt.show()
 
-def plot_poincare_3d_projections(poincare_coords, colors=None):
 def plot_poincare_3d_projections(poincare_coords, colors=None, output_file=None):
-    """
-    Creates 2D projections (XY, XZ, YZ) of a 3D Poincare embedding.
+    """Creates 2D projections (XY, XZ, YZ) of a 3D Poincare embedding.
 
     Args:
         poincare_coords (np.ndarray): An N x 3 array of Poincare coordinates.
         colors (optional): An array of colors for the points.
+        output_file (str, optional): If provided, saves the plot to this file path.
     """
     if plt is None:
         print("\nWarning: matplotlib is not installed. Skipping 2D projections plot.")
@@ -221,7 +217,6 @@ def plot_poincare_3d_projections(poincare_coords, colors=None, output_file=None)
     else:
         plt.show()
 
-def visualize_embedding(fit_results):
 def visualize_embedding(fit_results, output_prefix=None):
     """
     Visualizes the embedding. For d=2 or d=3, it plots directly.
@@ -246,11 +241,8 @@ def visualize_embedding(fit_results, output_prefix=None):
         return f"{output_prefix}_{suffix}.pdf" if output_prefix else None
 
     if dim == 2:
-        plot_poincare_2d(coords, colors=colors)
         plot_poincare_2d(coords, colors=colors, output_file=get_path("2d"))
     elif dim == 3:
-        plot_poincare_3d(coords, colors=colors)
-        plot_poincare_3d_projections(coords, colors=colors)
         plot_poincare_3d(coords, colors=colors, output_file=get_path("3d"))
         plot_poincare_3d_projections(coords, colors=colors, output_file=get_path("3d_projections"))
     elif dim > 3:
@@ -260,19 +252,19 @@ def visualize_embedding(fit_results, output_prefix=None):
             return
 
         
-        # Use PCA to find the two principal components
-        pca = PCA(n_components=2)
+        # Use PCA to find the three principal components
+        pca = PCA(n_components=3)
         projected_coords = pca.fit_transform(coords)
         
         explained_variance = sum(pca.explained_variance_ratio_) * 100
-        print(f"The 2D PCA projection explains {explained_variance:.2f}% of the variance.")
+        print(f"The 3D PCA projection explains {explained_variance:.2f}% of the variance.")
 
         num_points = coords.shape[0]
         colors = np.arange(num_points)
 
-        title = f"PCA Projection of {dim}D Embedding to 2D Poincare Disk"
-        plot_poincare_2d(projected_coords, title=title, colors=colors)
-        plot_poincare_2d(projected_coords, title=title, colors=colors, output_file=get_path("pca_2d"))
+        title = f"PCA Projection of {dim}D Embedding to 3D Poincare Ball"
+        plot_poincare_3d(projected_coords, colors=colors, output_file=get_path("pca_3d"))
+        plot_poincare_3d_projections(projected_coords, colors=colors, output_file=get_path("pca_3d_projections")) 
 
 def load_dmat_from_mat(mat_file_path, matrix_variable_name):
     """
@@ -453,7 +445,6 @@ if __name__ == '__main__':
             plot_shepard_diagram(fit_results['dmat'], fit_results['emb_mat'],
                                  fit_results['lambda'], title="Shepard Diagram: Hyperbolic Embedding")
             # Visualize the embedding, using PCA if dimension > 3
-            visualize_embedding(fit_results)
             visualize_embedding(fit_results, output_prefix=args.output)
 
         # --- Euclidean Embedding ---
