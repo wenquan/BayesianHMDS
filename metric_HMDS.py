@@ -19,6 +19,7 @@ data {
     int<lower=0> N;        // number of points
     int<lower=0> D;        // Dimension of space
     matrix[N, N] deltaij;  // matrix of data distances, only upper triangle will be operated on
+    matrix[N, N] deltaij_unc; // matrix of data distance uncertainties
 }
 transformed data {
     real Nterms = 0.5*N*(N-1);
@@ -51,7 +52,7 @@ model {
             if (deltaij[i,j] > 0.0){
                 //compute embedding distance and effective uncertainties
                 dist = hyp(time[i], time[j], euc[i], euc[j]);
-                seff = sqrt(square(sig[i]) + square(sig[j]));
+                seff = sqrt(square(sig[i]) + square(sig[j]) + deltaij_unc[i,j]);
 
                 //data distances normally distributed about embedding distance
                 deltaij[i,j] ~ normal(dist/lambda, seff);
@@ -188,35 +189,33 @@ def process_simulation(fit):
 # N: number of points, must be same as shape of dij
 # D: Dimension of embedding space
 # dij: distance matrix to be embedded
+# dij_unc: uncertainty matrix for the distances
 # iv: initial values to start embedding from
-def embed(D, dij, initial_values=None, Niter=50000):
+def embed(D, dij, dij_unc=None, initial_values=None, Niter=50000):
    """
    Returns embedding of distance matrix and optimized parameter values
    Inputs:
       D - Dimension of embedding space
       dij - dissimilarity matrix which embedding tries to reproduce
+      dij_unc (optional) - matrix of uncertainties for each distance measurement.
+                           If not provided, it will be a matrix of zeros.
       initial_values (optional) - initial conditions to begin optimizing from
       Niter (default 50000) - max number of iterations optimizer runs for if convergence
          not detected
    Output:
-      Dictionary containing processed embedding results stored in the following keys
-      'euc' - x1-xd space like euclidean components of lorentzian representation of embedding
-      'time' - x0 time like component of lorentz representation
-      'lambda' - curvature scale parameter
-      'sig' - pointwise embedding uncertainties
-      'poin' - poincare coordinates of embedding
-      'rs' - radial coordinates of points
-      'emb_mat' - hyperbolic distance matrix of embedded points
-      'dmat' - data dissimilarity matrix given as input
-      'cp' - poincare coordinates of embedding with center of mass translated to the origin
-      'crs' - radial coordinates of points after CM translation
+      Dictionary containing processed embedding results...
    """
 
    #compile model
    hmds_m = stan.StanModel(model_code=HMDS_code, verbose=False)
 
    N = len(dij)
-   dat = {'N':N, 'D':D, 'deltaij':dij}
+   
+   # If no uncertainty matrix is provided, create a matrix of zeros.
+   if dij_unc is None:
+       dij_unc = np.zeros_like(dij)
+
+   dat = {'N':N, 'D':D, 'deltaij':dij, 'deltaij_unc': dij_unc}
    if (initial_values != None):
       fit = hmds_m.optimizing(data=dat, iter=Niter, init=initial_values)
    else:
@@ -224,6 +223,7 @@ def embed(D, dij, initial_values=None, Niter=50000):
    fit['dmat'] = dij
    process_simulation(fit)
    return fit
+
 
 # functions for generating data uniformly distributed in hyperbolic space
 ###############################################################################################
@@ -355,4 +355,3 @@ def large_embedding(Nseed, Nadd, Ntot, D, dij):
       seed = relax_seed(seed, dij, hmds_m)
 
    return seed
-

@@ -8,8 +8,10 @@ hmds_env/
 __pycache__/
 *.pyc
 
-# Ignore everything in the figure folder
+# Ignore everything in the following folder
 figure/
+data/
+results/
 
 # Ignore all pkl files
 *.pkl

@@ -33,7 +33,7 @@ class MatReadError(Exception):
     """Custom exception for MATLAB file reading errors."""
     pass
 
-def plot_shepard_diagram(original_dmat, embedded_dmat, lambda_val=None, title="Shepard Diagram"):
+def plot_shepard_diagram(original_dmat, embedded_dmat, lambda_val=None, title="Shepard Diagram", output_file=None):
     """
     Creates and displays a Shepard diagram to compare original and embedded distances.
 
@@ -42,6 +42,7 @@ def plot_shepard_diagram(original_dmat, embedded_dmat, lambda_val=None, title="S
         embedded_dmat (np.ndarray): The distance matrix from the embedding.
         lambda_val (float): The fitted curvature scale parameter.
         title (str): The title for the plot.
+        output_file (str, optional): If provided, saves the plot to this file path as a PDF.
     """
     if plt is None:
         print("\nWarning: matplotlib is not installed. Skipping plot. Please run 'pip install matplotlib'.")
@@ -70,14 +71,20 @@ def plot_shepard_diagram(original_dmat, embedded_dmat, lambda_val=None, title="S
 
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.scatter(original_distances, embedded_distances, alpha=0.5, s=15, edgecolors='k', linewidths=0.5)
-    ax.plot([0, max(original_distances.max(), embedded_distances.max())], [0, max(original_distances.max(), embedded_distances.max())], 'r--', label=f'Perfect Match (y=x)\n$R^2 = {r_squared:.4f}$')
+    ax.plot([0, max(original_distances.max(), embedded_distances.max())], [0, max(original_distances.max(), embedded_distances.max())], 'r--', label=f'Perfect Match (y=x)\n$R^2 = {r_squared:.2f}$')
     ax.set_xlabel("Original Pairwise Distances (Normalized)")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.grid(True)
     ax.set_aspect('equal', 'box')
     ax.legend()
-    plt.show()
+    
+    if output_file:
+        print(f"Saving Shepard diagram to {output_file}...")
+        fig.savefig(output_file, format='pdf', bbox_inches='tight')
+        plt.close(fig)
+    else:
+        plt.show()
 
 def plot_poincare_2d(poincare_coords, title="2D Hyperbolic Embedding (Poincare Disk)", colors=None, output_file=None):
     """
@@ -91,7 +98,6 @@ def plot_poincare_2d(poincare_coords, title="2D Hyperbolic Embedding (Poincare D
     """
     if plt is None:
         print("\nWarning: matplotlib is not installed. Skipping 2D plot. Please run 'pip install matplotlib'.")
-        return
         return
 
     print("Generating 2D Poincare disk visualization...")
@@ -112,7 +118,6 @@ def plot_poincare_2d(poincare_coords, title="2D Hyperbolic Embedding (Poincare D
     if colors is not None:
         fig.colorbar(scatter, ax=ax, label="Point Index")
 
-    plt.show()
     if output_file:
         print(f"Saving 2D plot to {output_file}...")
         fig.savefig(output_file, format='pdf', bbox_inches='tight')
@@ -163,7 +168,6 @@ def plot_poincare_3d(poincare_coords, colors=None, output_file=None):
     # Set aspect ratio to be equal
     ax.set_box_aspect([1,1,1])
 
-    plt.show()
     if output_file:
         print(f"Saving 3D plot to {output_file}...")
         fig.savefig(output_file, format='pdf', bbox_inches='tight')
@@ -209,7 +213,6 @@ def plot_poincare_3d_projections(poincare_coords, colors=None, output_file=None)
     if colors is not None:
         fig.colorbar(scatter, ax=axes.ravel().tolist(), shrink=0.8, label="Point Index")
 
-    plt.show()
     if output_file:
         print(f"Saving 3D projections plot to {output_file}...")
         fig.savefig(output_file, format='pdf', bbox_inches='tight')
@@ -232,7 +235,7 @@ def visualize_embedding(fit_results, output_prefix=None):
 
     coords = fit_results['cp']
     dim = coords.shape[1]
-    
+
     # Generate a color array based on the index of each point
     num_points = coords.shape[0]
     colors = np.arange(num_points)
@@ -247,20 +250,11 @@ def visualize_embedding(fit_results, output_prefix=None):
         plot_poincare_3d_projections(coords, colors=colors, output_file=get_path("3d_projections"))
     elif dim > 3:
         print(f"\nEmbedding dimension is {dim} (>3). Projecting to 2D using PCA for visualization.")
-        if PCA is None:
-            print("Warning: scikit-learn is not installed. Skipping PCA plot. Please run 'pip install scikit-learn'.")
-            return
-
-        
         # Use PCA to find the three principal components
         pca = PCA(n_components=3)
         projected_coords = pca.fit_transform(coords)
-        
         explained_variance = sum(pca.explained_variance_ratio_) * 100
         print(f"The 3D PCA projection explains {explained_variance:.2f}% of the variance.")
-
-        num_points = coords.shape[0]
-        colors = np.arange(num_points)
 
         title = f"PCA Projection of {dim}D Embedding to 3D Poincare Ball"
         plot_poincare_3d(projected_coords, colors=colors, output_file=get_path("pca_3d"))
@@ -326,12 +320,60 @@ def load_dmat_from_mat(mat_file_path, matrix_variable_name):
 
     return dmat
 
-def run_embedding(dmat, embedding_dim, verbose=False, output_path=None):
+def calculate_bic(dmat, emb_mat, n_params, is_hyperbolic=False, lambda_val=None, sig_vals=None, dmat_unc=None):
+    """
+    Calculates the Bayesian Information Criterion (BIC) for an embedding.
+
+    Args:
+        dmat (np.ndarray): The original distance matrix.
+        dmat_unc (np.ndarray, optional): The matrix of uncertainties for each distance.
+        emb_mat (np.ndarray): The distance matrix from the embedding.
+        n_params (int): The number of parameters in the model.
+        is_hyperbolic (bool): Flag to indicate if the model is hyperbolic.
+        lambda_val (float, optional): The lambda scale parameter for hyperbolic models.
+        sig_vals (np.ndarray, optional): The uncertainty parameters for hyperbolic models.
+
+    Returns:
+        float: The calculated BIC value.
+    """
+    N = dmat.shape[0]
+    n_pairs = N * (N - 1) / 2
+    indices = np.triu_indices(N, k=1)
+    
+    original_distances = dmat[indices]
+    embedded_distances = emb_mat[indices]
+
+    if is_hyperbolic:
+        # Combine inferred and data uncertainties, matching the Stan model
+        inferred_seff_sq = np.array([sig_vals[i]**2 + sig_vals[j]**2 for i in range(N) for j in range(i + 1, N)])
+        data_unc_sq = dmat_unc[indices] if dmat_unc is not None else 0
+        seff_sq = inferred_seff_sq + data_unc_sq
+
+        residuals = original_distances - (embedded_distances / lambda_val)
+        log_likelihood = -0.5 * np.sum(np.log(2 * np.pi * seff_sq) + (residuals**2 / seff_sq))
+    else: # Euclidean
+        # For the Euclidean case, we assume a single global model variance (sigma_model^2)
+        # plus the known data variance for each pair.
+        residuals = original_distances - embedded_distances
+        rss = np.sum(residuals**2)
+        
+        # Estimate the single model variance parameter via MLE.
+        # This is equivalent to the average residual sum of squares.
+        sigma2_model_mle = rss / n_pairs
+        
+        data_unc_sq = dmat_unc[indices] if dmat_unc is not None else 0
+        total_variance = sigma2_model_mle + data_unc_sq
+        log_likelihood = -0.5 * np.sum(np.log(2 * np.pi * total_variance) + (residuals**2 / total_variance))
+
+    return n_params * np.log(n_pairs) - 2 * log_likelihood
+
+def run_embedding(dmat, embedding_dim, dmat_unc=None, verbose=False, output_path=None):
     """
     Takes a distance matrix, normalizes it, and runs the HMDS embedding.
 
     Args:
         dmat (np.ndarray): The input distance matrix.
+        dmat_unc (np.ndarray, optional): The matrix of uncertainties for each distance.
         embedding_dim (int): The target dimension for the hyperbolic embedding.
         verbose (bool): If True, prints Stan's optimization progress. Defaults to False.
         output_path (str, optional): If provided, saves the fit_results dictionary 
@@ -357,19 +399,25 @@ def run_embedding(dmat, embedding_dim, verbose=False, output_path=None):
     print(f"Starting HMDS embedding into {embedding_dim} dimensions...")
     # This step can take several minutes, especially the first time.
     if verbose:
-        fit = HMDS.embed(embedding_dim, dmat)
+        fit = HMDS.embed(embedding_dim, dmat, dij_unc=dmat_unc)
     else:
         # Suppress the C++ output from Stan by redirecting stdout and stderr
         print("Stan optimization output is suppressed. This may take a while...")
         f = io.StringIO()
         with contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
-            fit = HMDS.embed(embedding_dim, dmat)
+            fit = HMDS.embed(embedding_dim, dmat, dij_unc=dmat_unc)
     
     # --- Print Results ---
     print("\n--- Embedding Complete ---")
     print(f"Fitted curvature scale parameter (lambda): {fit['lambda']:.4f}")
     print(f"Embedding contains {len(fit['euc'])} points.")
     print("Results are available in the 'fit' dictionary.")
+
+    # --- Calculate BIC ---
+    n_params = dmat.shape[0] * embedding_dim + dmat.shape[0] + 1 - embedding_dim*(embedding_dim - 1)/2 # N*D + N + 1 - D*(D-1)/2
+    fit['bic'] = calculate_bic(fit['dmat'], fit['emb_mat'], n_params, 
+                               is_hyperbolic=True, lambda_val=fit['lambda'], 
+                               sig_vals=fit['sig'], dmat_unc=dmat_unc)
 
     # --- Save Results to Disk ---
     if output_path:
@@ -384,13 +432,14 @@ def run_embedding(dmat, embedding_dim, verbose=False, output_path=None):
 
     return fit
 
-def run_euclidean_embedding(dmat, embedding_dim):
+def run_euclidean_embedding(dmat, embedding_dim, dmat_unc=None):
     """
     Performs classical multidimensional scaling (MDS) for a Euclidean embedding.
 
     Args:
         dmat (np.ndarray): The input distance matrix.
         embedding_dim (int): The target dimension for the Euclidean embedding.
+        dmat_unc (np.ndarray, optional): The matrix of uncertainties for each distance.
 
     Returns:
         dict or None: A dictionary containing the embedding results, or None if
@@ -416,7 +465,12 @@ def run_euclidean_embedding(dmat, embedding_dim):
     # Calculate the pairwise distances in the new Euclidean embedding
     embedded_dmat = pairwise_distances(coords, metric='euclidean')
 
-    return {'dmat': dmat, 'emb_mat': embedded_dmat, 'coords': coords}
+    # --- Calculate BIC ---
+    n_params = dmat.shape[0] * embedding_dim + 1 # N*D + 1 (for variance)
+    bic = calculate_bic(dmat, embedded_dmat, n_params, dmat_unc=dmat_unc)
+
+
+    return {'dmat': dmat, 'emb_mat': embedded_dmat, 'coords': coords, 'bic': bic}
 
 
 if __name__ == '__main__':
@@ -426,6 +480,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run Hyperbolic MDS on a distance matrix from a .mat file.")
     parser.add_argument("mat_file", help="Path to the input .mat file.")
     parser.add_argument("matrix_name", help="Name of the distance matrix variable within the .mat file.")
+    parser.add_argument("--unc-name", help="Name of the distance uncertainty matrix variable within the .mat file (optional).")
     parser.add_argument("-d", "--dim", type=int, default=3, help="Target dimension for the embedding (default: 3).")
     parser.add_argument("--no-plot", action="store_true", help="Suppress the Shepard diagram plot.")
     parser.add_argument("-o", "--output", help="Output file prefix to save plots as PDF files instead of displaying them.")
@@ -436,24 +491,34 @@ if __name__ == '__main__':
         # Command-line workflow
         print(f"Loading data from: {args.mat_file}")
         distance_matrix = load_dmat_from_mat(args.mat_file, args.matrix_name)
+        distance_unc_matrix = None
+        if args.unc_name:
+            print(f"Loading uncertainty data from variable: {args.unc_name}")
+            distance_unc_matrix = load_dmat_from_mat(args.mat_file, args.unc_name)
         
         # --- Hyperbolic Embedding ---
-        fit_results = run_embedding(distance_matrix, args.dim, verbose=True)
+        fit_results = run_embedding(distance_matrix, args.dim, 
+                                    dmat_unc=distance_unc_matrix, 
+                                    verbose=True)
+        print(f"Hyperbolic Embedding BIC: {fit_results['bic']:.2f}")
 
         if not args.no_plot:
             # Shepard diagram for Hyperbolic embedding
             plot_shepard_diagram(fit_results['dmat'], fit_results['emb_mat'],
-                                 fit_results['lambda'], title="Shepard Diagram: Hyperbolic Embedding")
+                                 fit_results['lambda'], title="Shepard Diagram: Hyperbolic Embedding",
+                                 output_file=f"{args.output}_hyperbolic_shepard.pdf" if args.output else None)
             # Visualize the embedding, using PCA if dimension > 3
             visualize_embedding(fit_results, output_prefix=args.output)
 
         # --- Euclidean Embedding ---
         euclidean_results = run_euclidean_embedding(distance_matrix, args.dim)
+        print(f"Euclidean Embedding BIC: {euclidean_results['bic']:.2f}")
 
         if euclidean_results and not args.no_plot:
             # Shepard diagram for Euclidean embedding
             plot_shepard_diagram(euclidean_results['dmat'], euclidean_results['emb_mat'],
-                                 title="Shepard Diagram: Euclidean Embedding")
+                                 title="Shepard Diagram: Euclidean Embedding",
+                                 output_file=f"{args.output}_euclidean_shepard.pdf" if args.output else None)
 
     except MatReadError as e:
         print(f"Error: {e}", file=sys.stderr)
