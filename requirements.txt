@@ -1,0 +1,20 @@
+# BayesianHMDS dependencies
+# Python 3.9 is required (pystan 2.x is not compatible with Python 3.10+)
+#
+# IMPORTANT: Cython must be installed before pystan.
+# See README for full setup instructions.
+
+# Core scientific stack
+numpy==2.0.2
+scipy==1.13.1
+matplotlib==3.9.4
+scikit-learn==1.6.1
+h5py==3.14.0
+
+# Stan backend — must install Cython first, then pystan
+Cython==3.1.4
+pystan==2.19.1.1
+
+# Jupyter (optional, needed for .ipynb notebooks)
+jupyterlab==4.4.9
+ipykernel==6.30.1
