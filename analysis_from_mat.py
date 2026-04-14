@@ -468,6 +468,80 @@ def run_embedding(dmat, embedding_dim, dmat_unc=None, verbose=False, output_path
 
     return fit
 
+def run_embedding_trials(dmat, embedding_dim, n_trials=5, dmat_unc=None, verbose=False,
+                         output_path=None):
+    """
+    Runs the hyperbolic embedding multiple times and aggregates lambda across trials.
+
+    The Stan optimizer uses a random initialization on each call, so lambda can
+    vary across runs. This function collects all trial results, reports mean ± std,
+    and returns the trial with the best (lowest) BIC as the representative fit.
+
+    Args:
+        dmat (np.ndarray): The input distance matrix.
+        embedding_dim (int): Target embedding dimension.
+        n_trials (int): Number of independent runs. Default 5.
+        dmat_unc (np.ndarray, optional): Uncertainty matrix, same shape as dmat.
+        verbose (bool): If True, prints Stan output for each trial.
+        output_path (str, optional): If provided, saves the best-BIC fit to this path.
+
+    Returns:
+        dict with keys:
+            'best_fit'      : full fit dict for the trial with the lowest BIC
+            'all_fits'      : list of all n_trials fit dicts
+            'lambda_mean'   : mean lambda across trials
+            'lambda_std'    : std of lambda across trials
+            'lambda_all'    : array of per-trial lambda values
+            'bic_all'       : array of per-trial BIC values
+    """
+    lambda_vals = []
+    bic_vals    = []
+    all_fits    = []
+
+    for i in range(n_trials):
+        print(f"\n{'='*60}")
+        print(f"Trial {i + 1} / {n_trials}")
+        fit = run_embedding(dmat, embedding_dim, dmat_unc=dmat_unc, verbose=verbose)
+        lambda_vals.append(fit['lambda'])
+        bic_vals.append(fit['bic'])
+        all_fits.append(fit)
+
+    lambda_vals = np.array(lambda_vals)
+    bic_vals    = np.array(bic_vals)
+    best_idx    = int(np.argmin(bic_vals))
+    best_fit    = all_fits[best_idx]
+
+    print(f"\n{'='*60}")
+    print(f"Trial Summary ({n_trials} runs, dim={embedding_dim})")
+    print(f"{'Trial':<8} {'lambda':>10} {'BIC':>14}")
+    print("-" * 34)
+    for i, (lam, bic) in enumerate(zip(lambda_vals, bic_vals)):
+        marker = " <-- best BIC" if i == best_idx else ""
+        print(f"{i + 1:<8} {lam:>10.4f} {bic:>14.2f}{marker}")
+    print("-" * 34)
+    print(f"{'Mean':<8} {lambda_vals.mean():>10.4f}")
+    print(f"{'Std':<8} {lambda_vals.std():>10.4f}  "
+          f"({100 * lambda_vals.std() / lambda_vals.mean():.1f}% of mean)")
+
+    if output_path:
+        try:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, 'wb') as f_out:
+                pickle.dump(best_fit, f_out)
+            print(f"\nBest-BIC fit saved to: {output_path}")
+        except Exception as e:
+            print(f"\nWarning: Could not save results to '{output_path}'. Error: {e}")
+
+    return {
+        'best_fit'    : best_fit,
+        'all_fits'    : all_fits,
+        'lambda_mean' : lambda_vals.mean(),
+        'lambda_std'  : lambda_vals.std(),
+        'lambda_all'  : lambda_vals,
+        'bic_all'     : bic_vals,
+    }
+
+
 def surrogate_distance_matrix(corr_mat, corr_unc=None, seed=None, distance_method='chord'):
     """
     Constructs a null-model distance matrix that preserves the eigenvalue spectrum
