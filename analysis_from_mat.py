@@ -575,23 +575,46 @@ def surrogate_distance_matrix(corr_mat, corr_unc=None, seed=None, distance_metho
     rng = np.random.default_rng(seed)
     M = corr_mat.shape[0]
 
-    # Step 1 — symmetrise then eigendecompose the real correlation matrix
-    # (C + C.T) / 2 removes any floating-point asymmetry before passing to eigh,
-    # which assumes exact symmetry.
-    corr_sym = (corr_mat + corr_mat.T) / 2.0
-    w, _ = np.linalg.eigh(corr_sym)   # ascending order
-    w = w[::-1]                        # descending (largest variance first)
+    # Step 1 — sanitize and symmetrise the input before eigendecomposition.
+    # corr_mat = 1 - distance_matrix is only in [-1,1] if distances are in [0,2].
+    # Values outside [-1,1] produce extreme eigenvalues that overflow in the matmul.
+    if not np.all(np.isfinite(corr_mat)):
+        raise ValueError("Input correlation matrix contains NaN or Inf values.")
+    corr_in = corr_mat.astype(np.float64, copy=True)
+    corr_in = np.clip(corr_in, -1.0, 1.0)
+    np.fill_diagonal(corr_in, 1.0)
+    corr_sym = (corr_in + corr_in.T) / 2.0
 
-    # Step 2 — random orthonormal basis via QR of a Gaussian matrix
+    # Step 2 — eigendecompose; clip eigenvalues to [0, M].
+    # Valid N×N correlation matrices are PSD with eigenvalues in [0, N].
+    # Negative eigenvalues from numerical noise and values beyond M from a
+    # non-PSD input are both clamped here before reconstruction.
+    w, _ = np.linalg.eigh(corr_sym)          # ascending order
+    w = np.clip(w, 0.0, float(M))
+    w = w[::-1].copy()                        # descending, contiguous for BLAS
+
+    n_neg_clipped = np.sum(w < 0)
+    if n_neg_clipped > 0:
+        print(f"Note: {n_neg_clipped} negative eigenvalue(s) clipped to 0 "
+              f"(input matrix is not perfectly PSD).")
+    print(f"Eigenvalue range: [{w[-1]:.4f}, {w[0]:.4f}], sum={w.sum():.2f} (expected ~{M})")
+
+    # Step 3 — random orthonormal basis via QR of a Gaussian matrix
     G = rng.standard_normal((M, M))
     Q, _ = np.linalg.qr(G)
 
-    # Step 3 — surrogate correlation matrix
-    corr_surr = Q @ np.diag(w) @ Q.T
+    # Step 4 — surrogate correlation matrix via einsum (avoids BLAS overflow paths
+    # triggered by (Q * w) @ Q.T and Q @ diag(w) @ Q.T for large M).
+    # Computes sum_k w[k] * outer(Q[:,k], Q[:,k]) without large intermediates.
+    corr_surr = np.einsum('ik,k,jk->ij', Q, w, Q)
 
-    # Step 4 — numerical cleanup: clip and reset diagonal
+    # Step 5 — numerical cleanup: clip and reset diagonal.
     corr_surr = np.clip(corr_surr, -1.0, 1.0)
     np.fill_diagonal(corr_surr, 1.0)
+    if not np.all(np.isfinite(corr_surr)):
+        n_bad = np.sum(~np.isfinite(corr_surr))
+        raise ValueError(f"Surrogate correlation matrix contains {n_bad} non-finite "
+                         f"entries after reconstruction. Check your input correlation matrix.")
 
     # Step 5 — correlation -> distance
     dmat_surr = corr_to_distance(corr_surr, method=distance_method)
