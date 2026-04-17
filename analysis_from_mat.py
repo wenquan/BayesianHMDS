@@ -575,23 +575,46 @@ def surrogate_distance_matrix(corr_mat, corr_unc=None, seed=None, distance_metho
     rng = np.random.default_rng(seed)
     M = corr_mat.shape[0]
 
-    # Step 1 — symmetrise then eigendecompose the real correlation matrix
-    # (C + C.T) / 2 removes any floating-point asymmetry before passing to eigh,
-    # which assumes exact symmetry.
-    corr_sym = (corr_mat + corr_mat.T) / 2.0
-    w, _ = np.linalg.eigh(corr_sym)   # ascending order
-    w = w[::-1]                        # descending (largest variance first)
+    # Step 1 — sanitize and symmetrise the input before eigendecomposition.
+    # corr_mat = 1 - distance_matrix is only in [-1,1] if distances are in [0,2].
+    # Values outside [-1,1] produce extreme eigenvalues that overflow in the matmul.
+    if not np.all(np.isfinite(corr_mat)):
+        raise ValueError("Input correlation matrix contains NaN or Inf values.")
+    corr_in = corr_mat.astype(np.float64, copy=True)
+    corr_in = np.clip(corr_in, -1.0, 1.0)
+    np.fill_diagonal(corr_in, 1.0)
+    corr_sym = (corr_in + corr_in.T) / 2.0
 
-    # Step 2 — random orthonormal basis via QR of a Gaussian matrix
+    # Step 2 — eigendecompose; clip eigenvalues to [0, M].
+    # Valid N×N correlation matrices are PSD with eigenvalues in [0, N].
+    # Negative eigenvalues from numerical noise and values beyond M from a
+    # non-PSD input are both clamped here before reconstruction.
+    w, _ = np.linalg.eigh(corr_sym)          # ascending order
+    w = np.clip(w, 0.0, float(M))
+    w = w[::-1].copy()                        # descending, contiguous for BLAS
+
+    n_neg_clipped = np.sum(w < 0)
+    if n_neg_clipped > 0:
+        print(f"Note: {n_neg_clipped} negative eigenvalue(s) clipped to 0 "
+              f"(input matrix is not perfectly PSD).")
+    print(f"Eigenvalue range: [{w[-1]:.4f}, {w[0]:.4f}], sum={w.sum():.2f} (expected ~{M})")
+
+    # Step 3 — random orthonormal basis via QR of a Gaussian matrix
     G = rng.standard_normal((M, M))
     Q, _ = np.linalg.qr(G)
 
-    # Step 3 — surrogate correlation matrix
-    corr_surr = Q @ np.diag(w) @ Q.T
+    # Step 4 — surrogate correlation matrix via einsum (avoids BLAS overflow paths
+    # triggered by (Q * w) @ Q.T and Q @ diag(w) @ Q.T for large M).
+    # Computes sum_k w[k] * outer(Q[:,k], Q[:,k]) without large intermediates.
+    corr_surr = np.einsum('ik,k,jk->ij', Q, w, Q)
 
-    # Step 4 — numerical cleanup: clip and reset diagonal
+    # Step 5 — numerical cleanup: clip and reset diagonal.
     corr_surr = np.clip(corr_surr, -1.0, 1.0)
     np.fill_diagonal(corr_surr, 1.0)
+    if not np.all(np.isfinite(corr_surr)):
+        n_bad = np.sum(~np.isfinite(corr_surr))
+        raise ValueError(f"Surrogate correlation matrix contains {n_bad} non-finite "
+                         f"entries after reconstruction. Check your input correlation matrix.")
 
     # Step 5 — correlation -> distance
     dmat_surr = corr_to_distance(corr_surr, method=distance_method)
@@ -647,51 +670,58 @@ def corr_to_distance(corr_mat, method='chord'):
     return dmat
 
 
-def corr_unc_to_dist_unc(corr_mat, corr_unc, method='chord', reg=1e-8):
+def corr_unc_to_dist_unc(corr_mat, corr_var, method='chord', reg=1e-8):
     """
-    Propagates per-element uncertainty from a correlation matrix to a distance matrix
+    Propagates per-element variance from a correlation matrix to a distance matrix
     using first-order error propagation (the delta method).
 
-    Chord method  — D_ij = sqrt(2*(1 - C_ij))
-        dD/dC = -1 / D_ij   →   σ_D_ij = σ_C_ij / D_ij
+    The input and output are both **variances**, matching what the Stan model expects:
+        seff = sqrt(sig[i]^2 + sig[j]^2 + deltaij_unc[i,j])
+    where deltaij_unc is treated as variance (added to squared sigma terms).
 
-        The uncertainty diverges as D_ij → 0 (C_ij → 1). To handle this, the
-        denominator is regularised: σ_D_ij = σ_C_ij / max(D_ij, reg).
-        This caps the propagated uncertainty at σ_C_ij / reg for perfectly
-        correlated pairs, reflecting the physical limit that distances below
-        `reg` cannot be resolved. The diagonal is set to 0.
+    Because the linear distance D_linear = 1 - C, Var(C) = Var(D_linear), so you
+    can pass the loaded variance matrix (e.g. var_dij_laserOn) directly as corr_var.
 
-    Linear method — D_ij = 1 - C_ij
-        dD/dC = -1  →  σ_D_ij = σ_C_ij  (trivial pass-through, reg unused).
+    Chord method  — D_chord = sqrt(2*(1 - C))
+        dD/dC = -1 / D_chord
+        Var(D_chord) = (dD/dC)^2 * Var(C) = Var(C) / D_chord^2
+
+        Diverges as D_chord → 0 (C → 1). The denominator is regularised:
+        Var(D_chord) = Var(C) / max(D_chord, reg)^2
+
+    Linear method — D_linear = 1 - C
+        dD/dC = -1  →  Var(D_linear) = Var(C)  (pass-through, reg unused).
 
     Args:
         corr_mat (np.ndarray): MxM correlation matrix (values in [-1, 1]).
-        corr_unc (np.ndarray): MxM matrix of correlation uncertainties (>= 0).
+        corr_var (np.ndarray): MxM matrix of correlation variances (>= 0).
+                               Equal to Var(D_linear) since D_linear = 1 - C.
         method (str): 'chord' (default) or 'linear'.
         reg (float): Regularisation floor for the chord-distance denominator.
-                     Entries with D_ij < reg are treated as D_ij = reg.
-                     Default 1e-8 (effectively zero on a [0, 2] distance scale).
+                     Entries with D_chord < reg are treated as D_chord = reg.
+                     Default 1e-8 (negligible on the [0, 2] distance scale).
 
     Returns:
-        np.ndarray: MxM distance-uncertainty matrix. Diagonal is 0.
+        np.ndarray: MxM distance-variance matrix. Diagonal is 0.
+                    Pass directly as dmat_unc to run_embedding().
     """
-    if corr_unc.shape != corr_mat.shape:
-        raise ValueError("corr_unc must have the same shape as corr_mat.")
+    if corr_var.shape != corr_mat.shape:
+        raise ValueError("corr_var must have the same shape as corr_mat.")
 
     if method == 'chord':
         dmat = np.sqrt(np.clip(2.0 * (1.0 - corr_mat), 0.0, None))
         n_reg = np.sum((dmat < reg) & ~np.eye(dmat.shape[0], dtype=bool))
         if n_reg > 0:
-            print(f"Note: {n_reg} off-diagonal pairs have D_ij < {reg:.0e}; "
-                  f"denominator floored at {reg:.0e} for uncertainty propagation.")
-        dmat_unc = corr_unc / np.maximum(dmat, reg)
+            print(f"Note: {n_reg} off-diagonal pairs have D_chord < {reg:.0e}; "
+                  f"denominator floored at {reg:.0e} for variance propagation.")
+        dmat_var = corr_var / np.maximum(dmat, reg) ** 2
     elif method == 'linear':
-        dmat_unc = corr_unc.copy()
+        dmat_var = corr_var.copy()
     else:
         raise ValueError(f"Unknown method '{method}'. Choose 'chord' or 'linear'.")
 
-    np.fill_diagonal(dmat_unc, 0.0)
-    return dmat_unc
+    np.fill_diagonal(dmat_var, 0.0)
+    return dmat_var
 
 
 def outlier_sensitivity_analysis(dmat, embedding_dim, removal_fractions=(0.05, 0.10, 0.20),
