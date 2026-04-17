@@ -23,3 +23,8 @@ Figure/
 
 # macOS system files
 .DS_Store
+
+
+.ipynb_checkpoints/
+.vscode/
+# %%

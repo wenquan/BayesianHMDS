@@ -647,51 +647,58 @@ def corr_to_distance(corr_mat, method='chord'):
     return dmat
 
 
-def corr_unc_to_dist_unc(corr_mat, corr_unc, method='chord', reg=1e-8):
+def corr_unc_to_dist_unc(corr_mat, corr_var, method='chord', reg=1e-8):
     """
-    Propagates per-element uncertainty from a correlation matrix to a distance matrix
+    Propagates per-element variance from a correlation matrix to a distance matrix
     using first-order error propagation (the delta method).
 
-    Chord method  — D_ij = sqrt(2*(1 - C_ij))
-        dD/dC = -1 / D_ij   →   σ_D_ij = σ_C_ij / D_ij
+    The input and output are both **variances**, matching what the Stan model expects:
+        seff = sqrt(sig[i]^2 + sig[j]^2 + deltaij_unc[i,j])
+    where deltaij_unc is treated as variance (added to squared sigma terms).
 
-        The uncertainty diverges as D_ij → 0 (C_ij → 1). To handle this, the
-        denominator is regularised: σ_D_ij = σ_C_ij / max(D_ij, reg).
-        This caps the propagated uncertainty at σ_C_ij / reg for perfectly
-        correlated pairs, reflecting the physical limit that distances below
-        `reg` cannot be resolved. The diagonal is set to 0.
+    Because the linear distance D_linear = 1 - C, Var(C) = Var(D_linear), so you
+    can pass the loaded variance matrix (e.g. var_dij_laserOn) directly as corr_var.
 
-    Linear method — D_ij = 1 - C_ij
-        dD/dC = -1  →  σ_D_ij = σ_C_ij  (trivial pass-through, reg unused).
+    Chord method  — D_chord = sqrt(2*(1 - C))
+        dD/dC = -1 / D_chord
+        Var(D_chord) = (dD/dC)^2 * Var(C) = Var(C) / D_chord^2
+
+        Diverges as D_chord → 0 (C → 1). The denominator is regularised:
+        Var(D_chord) = Var(C) / max(D_chord, reg)^2
+
+    Linear method — D_linear = 1 - C
+        dD/dC = -1  →  Var(D_linear) = Var(C)  (pass-through, reg unused).
 
     Args:
         corr_mat (np.ndarray): MxM correlation matrix (values in [-1, 1]).
-        corr_unc (np.ndarray): MxM matrix of correlation uncertainties (>= 0).
+        corr_var (np.ndarray): MxM matrix of correlation variances (>= 0).
+                               Equal to Var(D_linear) since D_linear = 1 - C.
         method (str): 'chord' (default) or 'linear'.
         reg (float): Regularisation floor for the chord-distance denominator.
-                     Entries with D_ij < reg are treated as D_ij = reg.
-                     Default 1e-8 (effectively zero on a [0, 2] distance scale).
+                     Entries with D_chord < reg are treated as D_chord = reg.
+                     Default 1e-8 (negligible on the [0, 2] distance scale).
 
     Returns:
-        np.ndarray: MxM distance-uncertainty matrix. Diagonal is 0.
+        np.ndarray: MxM distance-variance matrix. Diagonal is 0.
+                    Pass directly as dmat_unc to run_embedding().
     """
-    if corr_unc.shape != corr_mat.shape:
-        raise ValueError("corr_unc must have the same shape as corr_mat.")
+    if corr_var.shape != corr_mat.shape:
+        raise ValueError("corr_var must have the same shape as corr_mat.")
 
     if method == 'chord':
         dmat = np.sqrt(np.clip(2.0 * (1.0 - corr_mat), 0.0, None))
         n_reg = np.sum((dmat < reg) & ~np.eye(dmat.shape[0], dtype=bool))
         if n_reg > 0:
-            print(f"Note: {n_reg} off-diagonal pairs have D_ij < {reg:.0e}; "
-                  f"denominator floored at {reg:.0e} for uncertainty propagation.")
-        dmat_unc = corr_unc / np.maximum(dmat, reg)
+            print(f"Note: {n_reg} off-diagonal pairs have D_chord < {reg:.0e}; "
+                  f"denominator floored at {reg:.0e} for variance propagation.")
+        dmat_var = corr_var / np.maximum(dmat, reg) ** 2
     elif method == 'linear':
-        dmat_unc = corr_unc.copy()
+        dmat_var = corr_var.copy()
     else:
         raise ValueError(f"Unknown method '{method}'. Choose 'chord' or 'linear'.")
 
-    np.fill_diagonal(dmat_unc, 0.0)
-    return dmat_unc
+    np.fill_diagonal(dmat_var, 0.0)
+    return dmat_var
 
 
 def outlier_sensitivity_analysis(dmat, embedding_dim, removal_fractions=(0.05, 0.10, 0.20),

@@ -17,9 +17,9 @@ from analysis_from_mat import (
     run_embedding_trials,
 )
 
-MATRIX_VAR   = 'distance_laserOff'
-UNC_VAR      = 'var_dij_laserOff'
-CONDITION    = 'laserOff'
+MATRIX_VAR   = 'distance_laserOn'
+UNC_VAR      = 'var_dij_laserOn'
+CONDITION    = 'laserOn'
 
 def main():
     parser = argparse.ArgumentParser(description="Run HMDS embedding trials for one fish.")
