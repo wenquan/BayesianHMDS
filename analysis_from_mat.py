@@ -542,22 +542,22 @@ def run_embedding_trials(dmat, embedding_dim, n_trials=5, dmat_unc=None, verbose
     }
 
 
-def surrogate_distance_matrix(corr_mat, corr_unc=None, seed=None, distance_method='chord'):
+def surrogate_distance_matrix(cov_mat, corr_unc=None, seed=None, distance_method='chord'):
     """
     Constructs a null-model distance matrix that preserves the eigenvalue spectrum
-    of a correlation matrix but randomises its geometric structure.
+    of a covariance matrix but randomises its geometric structure.
 
     Procedure
     ---------
-    1. Eigendecompose the real correlation matrix: C = V @ diag(w) @ V.T
+    1. Eigendecompose the real covariance matrix: Cov = V @ diag(w) @ V.T
     2. Draw a random orthonormal basis Q via QR decomposition of a Gaussian matrix.
-    3. Reconstruct a surrogate correlation matrix: C_surr = Q @ diag(w) @ Q.T
-    4. Clip C_surr to [-1, 1] and force the diagonal to 1 (numerical cleanup).
+    3. Reconstruct a surrogate covariance matrix: Cov_surr = Q @ diag(w) @ Q.T
+    4. Normalise to a correlation matrix: Corr_surr[i,j] = Cov_surr[i,j] / sqrt(Cov_surr[i,i] * Cov_surr[j,j])
     5. Convert to a distance matrix and, if corr_unc is provided, propagate
        the correlation uncertainty to a distance uncertainty via corr_unc_to_dist_unc.
 
     Args:
-        corr_mat (np.ndarray): MxM real symmetric correlation matrix.
+        cov_mat (np.ndarray): MxM real symmetric positive-semidefinite covariance matrix.
         corr_unc (np.ndarray, optional): MxM matrix of correlation uncertainties.
             The same uncertainty matrix is used for the surrogate (the surrogate
             randomises geometry, not measurement precision).
@@ -569,57 +569,54 @@ def surrogate_distance_matrix(corr_mat, corr_unc=None, seed=None, distance_metho
             'corr_surrogate'  : MxM surrogate correlation matrix
             'dmat_surrogate'  : MxM surrogate distance matrix
             'dmat_unc'        : MxM propagated distance uncertainty (None if corr_unc not given)
-            'eigenvalues'     : sorted eigenvalues (descending) from the real matrix
+            'eigenvalues'     : sorted eigenvalues (descending) from the real covariance matrix
             'Q'               : the random orthonormal basis used
     """
     rng = np.random.default_rng(seed)
-    M = corr_mat.shape[0]
+    M = cov_mat.shape[0]
 
     # Step 1 — sanitize and symmetrise the input before eigendecomposition.
-    # corr_mat = 1 - distance_matrix is only in [-1,1] if distances are in [0,2].
-    # Values outside [-1,1] produce extreme eigenvalues that overflow in the matmul.
-    if not np.all(np.isfinite(corr_mat)):
-        raise ValueError("Input correlation matrix contains NaN or Inf values.")
-    corr_in = corr_mat.astype(np.float64, copy=True)
-    corr_in = np.clip(corr_in, -1.0, 1.0)
-    np.fill_diagonal(corr_in, 1.0)
-    corr_sym = (corr_in + corr_in.T) / 2.0
+    if not np.all(np.isfinite(cov_mat)):
+        raise ValueError("Input covariance matrix contains NaN or Inf values.")
+    cov_in = cov_mat.astype(np.float64, copy=True)
+    cov_sym = (cov_in + cov_in.T) / 2.0
 
-    # Step 2 — eigendecompose; clip eigenvalues to [0, M].
-    # Valid N×N correlation matrices are PSD with eigenvalues in [0, N].
-    # Negative eigenvalues from numerical noise and values beyond M from a
-    # non-PSD input are both clamped here before reconstruction.
-    w, _ = np.linalg.eigh(corr_sym)          # ascending order
-    w = np.clip(w, 0.0, float(M))
+    # Step 2 — eigendecompose; clip negative eigenvalues to 0 (numerical noise).
+    w, _ = np.linalg.eigh(cov_sym)           # ascending order
+    n_neg_clipped = int(np.sum(w < 0))
+    w = np.clip(w, 0.0, None)
     w = w[::-1].copy()                        # descending, contiguous for BLAS
 
-    n_neg_clipped = np.sum(w < 0)
     if n_neg_clipped > 0:
         print(f"Note: {n_neg_clipped} negative eigenvalue(s) clipped to 0 "
               f"(input matrix is not perfectly PSD).")
-    print(f"Eigenvalue range: [{w[-1]:.4f}, {w[0]:.4f}], sum={w.sum():.2f} (expected ~{M})")
+    print(f"Eigenvalue range: [{w[-1]:.4f}, {w[0]:.4f}], sum={w.sum():.4f}")
 
-    # Step 3 — random orthonormal basis via QR of a Gaussian matrix
+    # Step 3 — random orthonormal basis via QR of a Gaussian matrix.
     G = rng.standard_normal((M, M))
     Q, _ = np.linalg.qr(G)
 
-    # Step 4 — surrogate correlation matrix via einsum (avoids BLAS overflow paths
-    # triggered by (Q * w) @ Q.T and Q @ diag(w) @ Q.T for large M).
-    # Computes sum_k w[k] * outer(Q[:,k], Q[:,k]) without large intermediates.
-    corr_surr = np.einsum('ik,k,jk->ij', Q, w, Q)
+    # Step 4 — surrogate covariance matrix.
+    cov_surr = np.einsum('ik,k,jk->ij', Q, w, Q)
 
-    # Step 5 — numerical cleanup: clip and reset diagonal.
+    # Step 5 — convert surrogate covariance to correlation matrix.
+    std = np.sqrt(np.diag(cov_surr))
+    # Guard against zero variance (degenerate directions).
+    std = np.where(std == 0, 1.0, std)
+    corr_surr = cov_surr / np.outer(std, std)
+
+    # Numerical cleanup: clip to [-1, 1] and reset diagonal.
     corr_surr = np.clip(corr_surr, -1.0, 1.0)
     np.fill_diagonal(corr_surr, 1.0)
     if not np.all(np.isfinite(corr_surr)):
-        n_bad = np.sum(~np.isfinite(corr_surr))
+        n_bad = int(np.sum(~np.isfinite(corr_surr)))
         raise ValueError(f"Surrogate correlation matrix contains {n_bad} non-finite "
-                         f"entries after reconstruction. Check your input correlation matrix.")
+                         f"entries after reconstruction. Check your input covariance matrix.")
 
-    # Step 5 — correlation -> distance
+    # Step 6 — correlation -> distance.
     dmat_surr = corr_to_distance(corr_surr, method=distance_method)
 
-    # Step 6 — propagate uncertainty if provided
+    # Step 7 — propagate uncertainty if provided.
     dmat_unc = None
     if corr_unc is not None:
         dmat_unc = corr_unc_to_dist_unc(corr_surr, corr_unc, method=distance_method)
